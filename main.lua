@@ -48,6 +48,11 @@ function Eraser:init()
     -- Track eraser button state
     self.eraser_active = false
 
+    -- Track deleted highlights to prevent race conditions
+    -- When rapidly deleting highlights, multiple pan events can try to delete the same highlight
+    -- This set tracks what we've already deleted in this eraser session
+    self.deleted_highlights = {}
+
     -- Define ges_events to catch gestures that might bypass touch zones
     -- This is especially important for edge gestures that open menus
     local screen_width = Screen:getWidth()
@@ -403,6 +408,12 @@ function Eraser:setEraserActive(active)
     logger.info("Eraser: State changing from", self.eraser_active, "to", active)
     self.eraser_active = active
 
+    -- Clear deleted highlights tracking when deactivating eraser mode
+    if not active then
+        self.deleted_highlights = {}
+        logger.dbg("Eraser: Cleared deleted highlights tracking")
+    end
+
     -- Trigger footer refresh to show/hide indicator
     UIManager:broadcastEvent(Event:new("RefreshAdditionalContent"))
 end
@@ -411,26 +422,20 @@ function Eraser:handleEraserGesture(ges)
     -- Unified handler for all gestures when eraser mode is active
     -- Returns true to block the gesture, false/nil to pass through to normal handlers
 
-    logger.info("ERASER DIAGNOSTIC: handleEraserGesture() called - ges.ges =", ges.ges, "eraser_active =",
-        self.eraser_active)
-
     if not self.eraser_active then
         -- Eraser not active - let gesture pass through to normal handlers
-        logger.info("ERASER DIAGNOSTIC: Eraser inactive, passing gesture through")
         return false
     end
 
     -- Eraser is active - block ALL gestures to create dedicated "eraser mode"
-    logger.info("ERASER DIAGNOSTIC: Eraser ACTIVE - BLOCKING gesture:", ges.ges)
+    logger.dbg("Eraser: Blocking gesture", ges.ges, "in eraser mode")
 
     -- For gestures with position data, delete highlights at that position
     if ges.pos and (ges.ges == "pan" or ges.ges == "hold" or ges.ges == "hold_pan") then
-        logger.info("ERASER DIAGNOSTIC: Attempting to delete highlights at position")
         self:deleteHighlightsAtPosition(ges.pos)
     end
 
     -- Consume the gesture to prevent it from reaching other handlers
-    logger.info("ERASER DIAGNOSTIC: Returning TRUE to consume gesture")
     return true
 end
 
@@ -438,18 +443,16 @@ end
 -- This is critical for blocking edge gestures that open menus
 
 function Eraser:onEraserSwipe(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserSwipe() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING swipe via ges_events")
+        logger.dbg("Eraser: Blocking swipe via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserPan(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserPan() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING pan via ges_events")
+        logger.dbg("Eraser: Blocking pan via ges_events")
         -- Delete highlights at pan position
         if ges and ges.pos then
             self:deleteHighlightsAtPosition(ges.pos)
@@ -460,36 +463,32 @@ function Eraser:onEraserPan(arg, ges)
 end
 
 function Eraser:onEraserPanRelease(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserPanRelease() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING pan_release via ges_events")
+        logger.dbg("Eraser: Blocking pan_release via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserTap(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserTap() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING tap via ges_events")
+        logger.dbg("Eraser: Blocking tap via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserDoubleTap(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserDoubleTap() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING double_tap via ges_events")
+        logger.dbg("Eraser: Blocking double_tap via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserHold(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserHold() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING hold via ges_events")
+        logger.dbg("Eraser: Blocking hold via ges_events")
         -- Delete highlights at hold position
         if ges and ges.pos then
             self:deleteHighlightsAtPosition(ges.pos)
@@ -500,9 +499,8 @@ function Eraser:onEraserHold(arg, ges)
 end
 
 function Eraser:onEraserHoldPan(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserHoldPan() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING hold_pan via ges_events")
+        logger.dbg("Eraser: Blocking hold_pan via ges_events")
         -- Delete highlights at hold_pan position
         if ges and ges.pos then
             self:deleteHighlightsAtPosition(ges.pos)
@@ -513,27 +511,24 @@ function Eraser:onEraserHoldPan(arg, ges)
 end
 
 function Eraser:onEraserHoldRelease(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserHoldRelease() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING hold_release via ges_events")
+        logger.dbg("Eraser: Blocking hold_release via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserPinch(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserPinch() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING pinch via ges_events")
+        logger.dbg("Eraser: Blocking pinch via ges_events")
         return true
     end
     return false
 end
 
 function Eraser:onEraserSpread(arg, ges)
-    logger.info("ERASER DIAGNOSTIC: onEraserSpread() called via ges_events - eraser_active =", self.eraser_active)
     if self.eraser_active then
-        logger.info("ERASER DIAGNOSTIC: BLOCKING spread via ges_events")
+        logger.dbg("Eraser: Blocking spread via ges_events")
         return true
     end
     return false
@@ -541,12 +536,8 @@ end
 
 function Eraser:onKeyPress(key)
     -- Activate eraser mode when Eraser button is pressed
-    logger.info("ERASER DIAGNOSTIC: onKeyPress() called - key.key =", key.key)
-
     if key.key == "Eraser" then
-        logger.info("========================================")
-        logger.info("ERASER DIAGNOSTIC: Eraser button PRESSED")
-        logger.info("========================================")
+        logger.info("Eraser: Eraser button PRESSED - activating eraser mode")
         self:setEraserActive(true)
     end
 
@@ -555,12 +546,8 @@ end
 
 function Eraser:onKeyRelease(key)
     -- Deactivate eraser mode when Eraser button is released
-    logger.info("ERASER DIAGNOSTIC: onKeyRelease() called - key.key =", key.key, "eraser_active =", self.eraser_active)
-
     if key.key == "Eraser" and self.eraser_active then
-        logger.info("========================================")
-        logger.info("ERASER DIAGNOSTIC: Eraser button RELEASED")
-        logger.info("========================================")
+        logger.info("Eraser: Eraser button RELEASED - deactivating eraser mode")
         self:setEraserActive(false)
         return true
     end
@@ -578,6 +565,9 @@ end
 
 function Eraser:deleteHighlightsAtPosition(pos)
     -- Delete highlights at the given screen position
+    -- Uses deleted_highlights tracking to prevent race conditions when multiple pan events
+    -- try to delete the same highlight rapidly
+
     if not self.ui or not self.ui.highlight or not self.ui.highlight.view then
         return false
     end
@@ -589,15 +579,66 @@ function Eraser:deleteHighlightsAtPosition(pos)
         return false
     end
 
+    -- Validate that annotation system is available
+    if not self.ui.annotation or not self.ui.annotation.annotations then
+        logger.warn("Eraser: Annotation system not available")
+        return false
+    end
+
     -- Transform screen coordinates to page coordinates
     local page_pos = highlight_module.view:screenToPageTransform(pos)
     local deleted_any = false
 
     for _, box in ipairs(visible_boxes) do
         if self:inside_box(page_pos, box.rect) then
-            logger.dbg("Eraser: Deleting highlight at index", box.index)
-            highlight_module:deleteHighlight(box.index)
-            deleted_any = true
+            -- Get the full annotation object to access datetime
+            -- box only contains: index, rect, drawer, color, draw_mark, colorful
+            -- The datetime field is in the annotation object, not in box
+            local annotation = self.ui.annotation.annotations[box.index]
+
+            if not annotation then
+                logger.dbg("Eraser: No annotation found for box index", box.index)
+                goto continue
+            end
+
+            -- Use datetime as unique identifier - this is what KOReader uses internally
+            -- in getMatchFunc() for identifying highlights uniquely
+            local highlight_id = annotation.datetime
+
+            if not highlight_id then
+                -- Fallback: if datetime is missing (should never happen), create ID from index + page
+                -- This is more unique than position-based ID
+                highlight_id = string.format("idx_%d_page_%s",
+                    box.index,
+                    tostring(annotation.page or annotation.pageno or "unknown"))
+                logger.dbg("Eraser: No datetime found for highlight, using fallback ID:", highlight_id)
+            end
+
+            -- Skip if we already deleted this highlight in this eraser session
+            if not self.deleted_highlights[highlight_id] then
+                -- Mark as deleted BEFORE attempting deletion to prevent race conditions
+                self.deleted_highlights[highlight_id] = true
+
+                -- Wrap deletion in pcall for safety - protects against index becoming invalid
+                -- between when we check inside_box and when we actually delete
+                local success, err = pcall(function()
+                    highlight_module:deleteHighlight(box.index)
+                end)
+
+                if success then
+                    logger.dbg("Eraser: Deleted highlight", highlight_id, "at index", box.index)
+                    deleted_any = true
+                else
+                    -- If deletion failed, remove from tracking so user can try again
+                    self.deleted_highlights[highlight_id] = nil
+                    logger.warn("Eraser: Failed to delete highlight", highlight_id, "at index", box.index, ":",
+                        tostring(err))
+                end
+            else
+                logger.dbg("Eraser: Skipping already-deleted highlight", highlight_id)
+            end
+
+            ::continue::
         end
     end
 
