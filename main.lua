@@ -33,15 +33,10 @@ local Eraser = InputContainer:extend {
 }
 
 function Eraser:init()
-    logger.info("========================================")
-    logger.info("ERASER DIAGNOSTIC: init() called")
-    logger.info("========================================")
-
     -- CRITICAL: Add plugin to ReaderUI widget tree so it receives ALL gesture events
     -- This ensures we catch gestures through BOTH touch zones AND ges_events system
     table.insert(self.ui, self)                -- Add to widget children for event propagation
     table.insert(self.ui.active_widgets, self) -- Always receive events even when hidden
-    logger.info("ERASER DIAGNOSTIC: Added plugin to ReaderUI widget tree")
 
     self.ui.menu:registerToMainMenu(self)
 
@@ -135,54 +130,14 @@ function Eraser:init()
         },
     }
 
-    logger.info("ERASER DIAGNOSTIC: Defined ges_events for", 10, "gesture types")
-
-    -- Diagnostic: Check what self.ui is
-    logger.info("ERASER DIAGNOSTIC: self.ui type =", type(self.ui))
-    logger.info("ERASER DIAGNOSTIC: self.ui.name =", self.ui.name or "nil")
-    logger.info("ERASER DIAGNOSTIC: self type =", type(self))
-    logger.info("ERASER DIAGNOSTIC: self.name =", self.name or "nil")
-
-    -- Diagnostic: Check if registerTouchZones exists
-    logger.info("ERASER DIAGNOSTIC: self.ui.registerTouchZones =", type(self.ui.registerTouchZones))
-    logger.info("ERASER DIAGNOSTIC: self.ui.registerPostReaderReadyCallback =",
-        type(self.ui.registerPostReaderReadyCallback))
-
-    -- Diagnostic: Verify plugin is now in event chain
-    logger.info("ERASER DIAGNOSTIC: Verifying plugin is in ReaderUI widget tree...")
-    local found_in_tree = false
-    if self.ui and type(self.ui) == "table" then
-        for i, widget in ipairs(self.ui) do
-            if widget == self then
-                found_in_tree = true
-                logger.info("ERASER DIAGNOSTIC: Plugin found at ui[" .. i .. "]")
-                break
-            end
-        end
-    end
-    if found_in_tree then
-        logger.info("ERASER DIAGNOSTIC: SUCCESS - Plugin is in widget tree!")
-    else
-        logger.warn("ERASER DIAGNOSTIC: WARNING - Plugin still not found in widget tree!")
-    end
-
     -- Register touch zones AFTER all reader modules complete initialization
     -- This ensures our overrides take precedence over reader module zones
     self.ui:registerPostReaderReadyCallback(function()
-        logger.info("========================================")
-        logger.info("ERASER DIAGNOSTIC: postReaderReadyCallback FIRED")
-        logger.info("========================================")
         self:registerTouchZonesAndFooter()
     end)
-
-    logger.info("ERASER DIAGNOSTIC: init() completed")
 end
 
 function Eraser:registerTouchZonesAndFooter()
-    logger.info("========================================")
-    logger.info("ERASER DIAGNOSTIC: registerTouchZonesAndFooter() called")
-    logger.info("========================================")
-
     -- Register touch zones with overrides to intercept gestures BEFORE page navigation
     -- Called via postReaderReadyCallback to ensure we register AFTER all reader modules
     -- have completed their onReaderReady() processing, guaranteeing our overrides work
@@ -191,8 +146,6 @@ function Eraser:registerTouchZonesAndFooter()
     if not hold_pan_rate then
         hold_pan_rate = Screen.low_pan_rate and 5.0 or 30.0
     end
-
-    logger.info("ERASER DIAGNOSTIC: hold_pan_rate =", hold_pan_rate, "Hz")
 
     -- Full screen zone for all gestures
     local full_screen = {
@@ -233,8 +186,6 @@ function Eraser:registerTouchZonesAndFooter()
         -- Two-column mode
         "twocol_swipe", "twocol_pan",
     }
-
-    logger.info("ERASER DIAGNOSTIC: zone_overrides list has", #zone_overrides, "items")
 
     -- Register touch zones for each gesture type
     local zones_to_register = {
@@ -312,69 +263,10 @@ function Eraser:registerTouchZonesAndFooter()
         },
     }
 
-    logger.info("ERASER DIAGNOSTIC: About to register", #zones_to_register, "touch zones")
-    logger.info("ERASER DIAGNOSTIC: Calling self.ui:registerTouchZones()...")
-
     self.ui:registerTouchZones(zones_to_register)
-
-    logger.info("ERASER DIAGNOSTIC: registerTouchZones() call completed")
-
-    -- Verify zones were registered
-    logger.info("ERASER DIAGNOSTIC: Verifying zone registration...")
-    if self.ui._zones then
-        logger.info("ERASER DIAGNOSTIC: self.ui._zones exists")
-        local eraser_zone_count = 0
-        local all_zone_ids = {}
-        for zone_id, _ in pairs(self.ui._zones) do
-            table.insert(all_zone_ids, zone_id)
-            if zone_id:match("^eraser_") then
-                eraser_zone_count = eraser_zone_count + 1
-                logger.info("ERASER DIAGNOSTIC: Found registered zone:", zone_id)
-            end
-        end
-        logger.info("ERASER DIAGNOSTIC: Total eraser zones registered:", eraser_zone_count)
-        logger.info("ERASER DIAGNOSTIC: Total zones in _zones:", #all_zone_ids)
-
-        -- Log first 20 zone IDs to see what's registered
-        logger.info("ERASER DIAGNOSTIC: Sample of all registered zone IDs:")
-        for i = 1, math.min(20, #all_zone_ids) do
-            logger.info("  - " .. all_zone_ids[i])
-        end
-    else
-        logger.warn("ERASER DIAGNOSTIC: self.ui._zones is NIL!")
-    end
-
-    -- Check dependency graph
-    if self.ui.touch_zone_dg then
-        logger.info("ERASER DIAGNOSTIC: touch_zone_dg exists")
-        local serialized = self.ui.touch_zone_dg:serialize()
-        logger.info("ERASER DIAGNOSTIC: Serialized zone order has", #serialized, "zones")
-
-        -- Find position of eraser zones in the order
-        for i, zone_id in ipairs(serialized) do
-            if zone_id:match("^eraser_") then
-                logger.info("ERASER DIAGNOSTIC: Zone", zone_id, "is at position", i, "in processing order")
-                -- Show what comes after it
-                if i < #serialized then
-                    logger.info("  Next zone:", serialized[i + 1])
-                end
-                if i > 1 then
-                    logger.info("  Previous zone:", serialized[i - 1])
-                end
-                break -- Just log the first eraser zone's position
-            end
-        end
-    else
-        logger.warn("ERASER DIAGNOSTIC: touch_zone_dg is NIL!")
-    end
-
-    logger.info("ERASER DIAGNOSTIC: Touch zones registration verification complete")
 
     -- Register footer status indicator
     self:registerFooterIndicator()
-
-    logger.info("ERASER DIAGNOSTIC: registerTouchZonesAndFooter() completed")
-    logger.info("========================================")
 end
 
 function Eraser:registerFooterIndicator()
