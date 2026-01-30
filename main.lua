@@ -10,17 +10,22 @@
     3. Highlights are deleted instantly and silently
     4. Release the button to return to normal interaction
 
+    When the Eraser button is held, ALL touch gestures are blocked to create a dedicated
+    "eraser mode" - this prevents accidental page turns, menu openings, or other interactions
+    while erasing highlights.
+
     Note: Currently tested on Kobo devices (Libra Colour). Other devices with
     an Eraser button may work if KOReader intercepts the button's input event.
 --]]
 
 local InputContainer = require("ui/widget/container/inputcontainer")
 local UIManager = require("ui/uimanager")
+local Event = require("ui/event")
 local logger = require("logger")
 local _ = require("gettext")
-local GestureRange = require("ui/gesturerange")
-local Geom = require("ui/geometry")
 local Screen = require("device").screen
+local Geom = require("ui/geometry")
+local GestureRange = require("ui/gesturerange")
 
 local Eraser = InputContainer:extend {
     name = "eraser",
@@ -28,62 +33,521 @@ local Eraser = InputContainer:extend {
 }
 
 function Eraser:init()
+    logger.info("========================================")
+    logger.info("ERASER DIAGNOSTIC: init() called")
+    logger.info("========================================")
+
+    -- CRITICAL: Add plugin to ReaderUI widget tree so it receives ALL gesture events
+    -- This ensures we catch gestures through BOTH touch zones AND ges_events system
+    table.insert(self.ui, self)                -- Add to widget children for event propagation
+    table.insert(self.ui.active_widgets, self) -- Always receive events even when hidden
+    logger.info("ERASER DIAGNOSTIC: Added plugin to ReaderUI widget tree")
+
     self.ui.menu:registerToMainMenu(self)
 
     -- Track eraser button state
     self.eraser_active = false
 
-    -- Register gesture events to intercept touch input when eraser is active
-    -- Supports both instant drag (pan) and long-press drag (hold/hold_pan)
-    local hold_pan_rate = G_reader_settings:readSetting("hold_pan_rate")
-    if not hold_pan_rate then
-        hold_pan_rate = Screen.low_pan_rate and 5.0 or 30.0
-    end
-
+    -- Define ges_events to catch gestures that might bypass touch zones
+    -- This is especially important for edge gestures that open menus
     local screen_width = Screen:getWidth()
     local screen_height = Screen:getHeight()
-
     local full_screen_range = Geom:new {
         x = 0, y = 0,
         w = screen_width,
         h = screen_height,
     }
 
-    -- Register gesture handlers (full screen range)
-    -- - hold: long-press detection
-    -- - hold_pan: long-press + drag
-    -- - pan: instant drag without long-press
     self.ges_events = {
+        -- Catch all swipe gestures (including edge swipes)
+        EraserSwipe = {
+            GestureRange:new {
+                ges = "swipe",
+                range = full_screen_range,
+            }
+        },
+        -- Catch all pan gestures
+        EraserPan = {
+            GestureRange:new {
+                ges = "pan",
+                range = full_screen_range,
+            }
+        },
+        -- Catch pan release
+        EraserPanRelease = {
+            GestureRange:new {
+                ges = "pan_release",
+                range = full_screen_range,
+            }
+        },
+        -- Catch tap gestures
+        EraserTap = {
+            GestureRange:new {
+                ges = "tap",
+                range = full_screen_range,
+            }
+        },
+        -- Catch double tap
+        EraserDoubleTap = {
+            GestureRange:new {
+                ges = "double_tap",
+                range = full_screen_range,
+            }
+        },
+        -- Catch hold
         EraserHold = {
             GestureRange:new {
                 ges = "hold",
                 range = full_screen_range,
             }
         },
+        -- Catch hold pan
         EraserHoldPan = {
             GestureRange:new {
                 ges = "hold_pan",
                 range = full_screen_range,
-                rate = hold_pan_rate,
             }
         },
-        EraserPan = {
+        -- Catch hold release
+        EraserHoldRelease = {
             GestureRange:new {
-                ges = "pan",
+                ges = "hold_release",
                 range = full_screen_range,
-                rate = hold_pan_rate,
+            }
+        },
+        -- Catch pinch/spread
+        EraserPinch = {
+            GestureRange:new {
+                ges = "pinch",
+                range = full_screen_range,
+            }
+        },
+        EraserSpread = {
+            GestureRange:new {
+                ges = "spread",
+                range = full_screen_range,
             }
         },
     }
 
-    logger.dbg("Eraser: Plugin initialized with gesture events (hold_pan_rate:", hold_pan_rate, "Hz)")
+    logger.info("ERASER DIAGNOSTIC: Defined ges_events for", 10, "gesture types")
+
+    -- Diagnostic: Check what self.ui is
+    logger.info("ERASER DIAGNOSTIC: self.ui type =", type(self.ui))
+    logger.info("ERASER DIAGNOSTIC: self.ui.name =", self.ui.name or "nil")
+    logger.info("ERASER DIAGNOSTIC: self type =", type(self))
+    logger.info("ERASER DIAGNOSTIC: self.name =", self.name or "nil")
+
+    -- Diagnostic: Check if registerTouchZones exists
+    logger.info("ERASER DIAGNOSTIC: self.ui.registerTouchZones =", type(self.ui.registerTouchZones))
+    logger.info("ERASER DIAGNOSTIC: self.ui.registerPostReaderReadyCallback =",
+        type(self.ui.registerPostReaderReadyCallback))
+
+    -- Diagnostic: Verify plugin is now in event chain
+    logger.info("ERASER DIAGNOSTIC: Verifying plugin is in ReaderUI widget tree...")
+    local found_in_tree = false
+    if self.ui and type(self.ui) == "table" then
+        for i, widget in ipairs(self.ui) do
+            if widget == self then
+                found_in_tree = true
+                logger.info("ERASER DIAGNOSTIC: Plugin found at ui[" .. i .. "]")
+                break
+            end
+        end
+    end
+    if found_in_tree then
+        logger.info("ERASER DIAGNOSTIC: SUCCESS - Plugin is in widget tree!")
+    else
+        logger.warn("ERASER DIAGNOSTIC: WARNING - Plugin still not found in widget tree!")
+    end
+
+    -- Register touch zones AFTER all reader modules complete initialization
+    -- This ensures our overrides take precedence over reader module zones
+    self.ui:registerPostReaderReadyCallback(function()
+        logger.info("========================================")
+        logger.info("ERASER DIAGNOSTIC: postReaderReadyCallback FIRED")
+        logger.info("========================================")
+        self:registerTouchZonesAndFooter()
+    end)
+
+    logger.info("ERASER DIAGNOSTIC: init() completed")
+end
+
+function Eraser:registerTouchZonesAndFooter()
+    logger.info("========================================")
+    logger.info("ERASER DIAGNOSTIC: registerTouchZonesAndFooter() called")
+    logger.info("========================================")
+
+    -- Register touch zones with overrides to intercept gestures BEFORE page navigation
+    -- Called via postReaderReadyCallback to ensure we register AFTER all reader modules
+    -- have completed their onReaderReady() processing, guaranteeing our overrides work
+
+    local hold_pan_rate = G_reader_settings:readSetting("hold_pan_rate")
+    if not hold_pan_rate then
+        hold_pan_rate = Screen.low_pan_rate and 5.0 or 30.0
+    end
+
+    logger.info("ERASER DIAGNOSTIC: hold_pan_rate =", hold_pan_rate, "Hz")
+
+    -- Full screen zone for all gestures
+    local full_screen = {
+        ratio_x = 0,
+        ratio_y = 0,
+        ratio_w = 1,
+        ratio_h = 1,
+    }
+
+    -- List of touch zone IDs to override (intercept before they get the gesture)
+    -- This ensures eraser mode blocks ALL interactions
+    local zone_overrides = {
+        -- Page navigation (PDF & EPUB)
+        "paging_swipe", "paging_pan", "paging_pan_release",
+        "rolling_swipe", "rolling_pan", "rolling_pan_release",
+        "tap_forward", "tap_backward",
+
+        -- Highlights
+        "readerhighlight_tap", "readerhighlight_hold", "readerhighlight_swipe",
+
+        -- Top menu (including edge swipes that open menus)
+        "readermenu_tap", "readermenu_ext_tap",
+        "readermenu_swipe", "readermenu_ext_swipe", -- Edge swipes to open menu
+        "readermenu_pan", "readermenu_ext_pan",     -- Edge pans to open menu
+        "tap_top_left_corner", "tap_top_right_corner",
+
+        -- Bottom menu (config menu - edge swipes from bottom)
+        "readerconfigmenu_tap", "readerconfigmenu_ext_tap",
+        "readerconfigmenu_swipe", "readerconfigmenu_ext_swipe",
+        "readerconfigmenu_pan", "readerconfigmenu_ext_pan",
+
+        -- Footer
+        "readerfooter_tap", "readerfooter_hold",
+
+        -- Config panel
+        "config_grip",
+
+        -- Two-column mode
+        "twocol_swipe", "twocol_pan",
+    }
+
+    logger.info("ERASER DIAGNOSTIC: zone_overrides list has", #zone_overrides, "items")
+
+    -- Register touch zones for each gesture type
+    local zones_to_register = {
+        {
+            id = "eraser_tap",
+            ges = "tap",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_double_tap",
+            ges = "double_tap",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_hold",
+            ges = "hold",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_hold_pan",
+            ges = "hold_pan",
+            screen_zone = full_screen,
+            rate = hold_pan_rate,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_hold_release",
+            ges = "hold_release",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_pan",
+            ges = "pan",
+            screen_zone = full_screen,
+            rate = hold_pan_rate,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_pan_release",
+            ges = "pan_release",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_swipe",
+            ges = "swipe",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_pinch",
+            ges = "pinch",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+        {
+            id = "eraser_spread",
+            ges = "spread",
+            screen_zone = full_screen,
+            overrides = zone_overrides,
+            handler = function(ges) return self:handleEraserGesture(ges) end,
+        },
+    }
+
+    logger.info("ERASER DIAGNOSTIC: About to register", #zones_to_register, "touch zones")
+    logger.info("ERASER DIAGNOSTIC: Calling self.ui:registerTouchZones()...")
+
+    self.ui:registerTouchZones(zones_to_register)
+
+    logger.info("ERASER DIAGNOSTIC: registerTouchZones() call completed")
+
+    -- Verify zones were registered
+    logger.info("ERASER DIAGNOSTIC: Verifying zone registration...")
+    if self.ui._zones then
+        logger.info("ERASER DIAGNOSTIC: self.ui._zones exists")
+        local eraser_zone_count = 0
+        local all_zone_ids = {}
+        for zone_id, _ in pairs(self.ui._zones) do
+            table.insert(all_zone_ids, zone_id)
+            if zone_id:match("^eraser_") then
+                eraser_zone_count = eraser_zone_count + 1
+                logger.info("ERASER DIAGNOSTIC: Found registered zone:", zone_id)
+            end
+        end
+        logger.info("ERASER DIAGNOSTIC: Total eraser zones registered:", eraser_zone_count)
+        logger.info("ERASER DIAGNOSTIC: Total zones in _zones:", #all_zone_ids)
+
+        -- Log first 20 zone IDs to see what's registered
+        logger.info("ERASER DIAGNOSTIC: Sample of all registered zone IDs:")
+        for i = 1, math.min(20, #all_zone_ids) do
+            logger.info("  - " .. all_zone_ids[i])
+        end
+    else
+        logger.warn("ERASER DIAGNOSTIC: self.ui._zones is NIL!")
+    end
+
+    -- Check dependency graph
+    if self.ui.touch_zone_dg then
+        logger.info("ERASER DIAGNOSTIC: touch_zone_dg exists")
+        local serialized = self.ui.touch_zone_dg:serialize()
+        logger.info("ERASER DIAGNOSTIC: Serialized zone order has", #serialized, "zones")
+
+        -- Find position of eraser zones in the order
+        for i, zone_id in ipairs(serialized) do
+            if zone_id:match("^eraser_") then
+                logger.info("ERASER DIAGNOSTIC: Zone", zone_id, "is at position", i, "in processing order")
+                -- Show what comes after it
+                if i < #serialized then
+                    logger.info("  Next zone:", serialized[i + 1])
+                end
+                if i > 1 then
+                    logger.info("  Previous zone:", serialized[i - 1])
+                end
+                break -- Just log the first eraser zone's position
+            end
+        end
+    else
+        logger.warn("ERASER DIAGNOSTIC: touch_zone_dg is NIL!")
+    end
+
+    logger.info("ERASER DIAGNOSTIC: Touch zones registration verification complete")
+
+    -- Register footer status indicator
+    self:registerFooterIndicator()
+
+    logger.info("ERASER DIAGNOSTIC: registerTouchZonesAndFooter() completed")
+    logger.info("========================================")
+end
+
+function Eraser:registerFooterIndicator()
+    -- Define footer content callback that returns eraser status
+    self.footer_content_func = function()
+        if self.eraser_active then
+            -- Return eraser icon based on footer style preference
+            if self.ui.view.footer.settings.item_prefix == "icons" then
+                return "✏ " -- Pencil icon with space for icons mode
+            elseif self.ui.view.footer.settings.item_prefix == "compact_items" then
+                return "✏" -- Compact (no trailing space)
+            else
+                return "E" -- Letter prefix for text mode
+            end
+        end
+        return nil -- Don't show anything when eraser is inactive
+    end
+
+    -- Register with footer (if it exists)
+    if self.ui.view and self.ui.view.footer then
+        self.ui.view.footer:addAdditionalFooterContent(self.footer_content_func)
+    end
+end
+
+function Eraser:setEraserActive(active)
+    -- Centralized state management with footer refresh
+    if self.eraser_active == active then
+        return -- No change, skip update
+    end
+
+    logger.info("Eraser: State changing from", self.eraser_active, "to", active)
+    self.eraser_active = active
+
+    -- Trigger footer refresh to show/hide indicator
+    UIManager:broadcastEvent(Event:new("RefreshAdditionalContent"))
+end
+
+function Eraser:handleEraserGesture(ges)
+    -- Unified handler for all gestures when eraser mode is active
+    -- Returns true to block the gesture, false/nil to pass through to normal handlers
+
+    logger.info("ERASER DIAGNOSTIC: handleEraserGesture() called - ges.ges =", ges.ges, "eraser_active =",
+        self.eraser_active)
+
+    if not self.eraser_active then
+        -- Eraser not active - let gesture pass through to normal handlers
+        logger.info("ERASER DIAGNOSTIC: Eraser inactive, passing gesture through")
+        return false
+    end
+
+    -- Eraser is active - block ALL gestures to create dedicated "eraser mode"
+    logger.info("ERASER DIAGNOSTIC: Eraser ACTIVE - BLOCKING gesture:", ges.ges)
+
+    -- For gestures with position data, delete highlights at that position
+    if ges.pos and (ges.ges == "pan" or ges.ges == "hold" or ges.ges == "hold_pan") then
+        logger.info("ERASER DIAGNOSTIC: Attempting to delete highlights at position")
+        self:deleteHighlightsAtPosition(ges.pos)
+    end
+
+    -- Consume the gesture to prevent it from reaching other handlers
+    logger.info("ERASER DIAGNOSTIC: Returning TRUE to consume gesture")
+    return true
+end
+
+-- ges_events handlers - These catch gestures through the event system (not just touch zones)
+-- This is critical for blocking edge gestures that open menus
+
+function Eraser:onEraserSwipe(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserSwipe() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING swipe via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserPan(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserPan() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING pan via ges_events")
+        -- Delete highlights at pan position
+        if ges and ges.pos then
+            self:deleteHighlightsAtPosition(ges.pos)
+        end
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserPanRelease(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserPanRelease() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING pan_release via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserTap(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserTap() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING tap via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserDoubleTap(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserDoubleTap() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING double_tap via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserHold(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserHold() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING hold via ges_events")
+        -- Delete highlights at hold position
+        if ges and ges.pos then
+            self:deleteHighlightsAtPosition(ges.pos)
+        end
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserHoldPan(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserHoldPan() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING hold_pan via ges_events")
+        -- Delete highlights at hold_pan position
+        if ges and ges.pos then
+            self:deleteHighlightsAtPosition(ges.pos)
+        end
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserHoldRelease(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserHoldRelease() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING hold_release via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserPinch(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserPinch() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING pinch via ges_events")
+        return true
+    end
+    return false
+end
+
+function Eraser:onEraserSpread(arg, ges)
+    logger.info("ERASER DIAGNOSTIC: onEraserSpread() called via ges_events - eraser_active =", self.eraser_active)
+    if self.eraser_active then
+        logger.info("ERASER DIAGNOSTIC: BLOCKING spread via ges_events")
+        return true
+    end
+    return false
 end
 
 function Eraser:onKeyPress(key)
     -- Activate eraser mode when Eraser button is pressed
+    logger.info("ERASER DIAGNOSTIC: onKeyPress() called - key.key =", key.key)
+
     if key.key == "Eraser" then
-        logger.dbg("Eraser: Eraser button PRESSED - activating eraser mode")
-        self.eraser_active = true
+        logger.info("========================================")
+        logger.info("ERASER DIAGNOSTIC: Eraser button PRESSED")
+        logger.info("========================================")
+        self:setEraserActive(true)
     end
 
     return false
@@ -91,9 +555,13 @@ end
 
 function Eraser:onKeyRelease(key)
     -- Deactivate eraser mode when Eraser button is released
+    logger.info("ERASER DIAGNOSTIC: onKeyRelease() called - key.key =", key.key, "eraser_active =", self.eraser_active)
+
     if key.key == "Eraser" and self.eraser_active then
-        logger.dbg("Eraser: Eraser button RELEASED - deactivating eraser mode")
-        self.eraser_active = false
+        logger.info("========================================")
+        logger.info("ERASER DIAGNOSTIC: Eraser button RELEASED")
+        logger.info("========================================")
+        self:setEraserActive(false)
         return true
     end
 
@@ -138,53 +606,39 @@ function Eraser:deleteHighlightsAtPosition(pos)
     end
 end
 
-function Eraser:onEraserHold(arg, ges)
-    -- Delete highlights on long-press when eraser is active
-    if self.eraser_active then
-        logger.dbg("Eraser: Processing hold in eraser mode at pos:", ges.pos)
-        if ges and ges.pos then
-            self:deleteHighlightsAtPosition(ges.pos)
-        end
-        return true
-    end
-
-    return false
-end
-
-function Eraser:onEraserHoldPan(arg, ges)
-    -- Delete highlights continuously during long-press drag
-    if self.eraser_active then
-        logger.dbg("Eraser: Processing hold-pan in eraser mode at pos:", ges.pos)
-        if ges and ges.pos then
-            self:deleteHighlightsAtPosition(ges.pos)
-        end
-        return true
-    end
-    return false
-end
-
-function Eraser:onEraserPan(arg, ges)
-    -- Delete highlights during instant drag (no long-press required)
-    if self.eraser_active then
-        if ges and ges.pos then
-            self:deleteHighlightsAtPosition(ges.pos)
-        end
-        return true
-    end
-    return false
-end
-
 function Eraser:onSuspend()
     -- Deactivate on suspend to prevent stuck state if button is held during sleep
     if self.eraser_active then
-        self.eraser_active = false
-        logger.dbg("Eraser: Deactivated eraser mode on suspend")
+        logger.info("Eraser: Deactivated eraser mode on suspend")
+        self:setEraserActive(false)
     end
 end
 
 function Eraser:onResume()
     -- Ensure inactive state on resume
-    self.eraser_active = false
+    self:setEraserActive(false)
+end
+
+function Eraser:onShowConfigMenu()
+    -- Safety: Reset eraser state when config menu opens
+    -- This event is broadcast when EITHER top or bottom menu opens
+    -- This prevents stuck state if the menu consumes our KeyRelease event
+    if self.eraser_active then
+        logger.warn("Eraser: Menu opened while eraser active - auto-resetting state for safety")
+        self:setEraserActive(false)
+    end
+    return false -- Don't consume - let menu open normally
+end
+
+function Eraser:onCloseDocument()
+    -- Clean up when document is closed
+    self:setEraserActive(false)
+
+    -- Unregister footer content
+    if self.ui.view and self.ui.view.footer and self.footer_content_func then
+        self.ui.view.footer:removeAdditionalFooterContent(self.footer_content_func)
+        self.footer_content_func = nil
+    end
 end
 
 return Eraser
