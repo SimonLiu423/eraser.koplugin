@@ -563,6 +563,60 @@ function Eraser:inside_box(pos, box)
         and box.y + box.h >= y
 end
 
+function Eraser:refreshVisibleBoxIndices(deleted_index)
+    -- After deleting an annotation at deleted_index, all subsequent annotations
+    -- shift down by 1 in the annotations array (due to table.remove).
+    -- We need to:
+    -- 1. REMOVE the deleted box from visible_boxes (its rect is now stale)
+    -- 2. Update remaining boxes' indices to reflect the shift
+
+    if not self.ui or not self.ui.highlight or not self.ui.highlight.view then
+        logger.warn("Eraser: Cannot refresh indices - highlight view not available")
+        return
+    end
+
+    local visible_boxes = self.ui.highlight.view.highlight.visible_boxes
+
+    if not visible_boxes or #visible_boxes == 0 then
+        logger.info("Eraser: No visible_boxes to refresh")
+        return
+    end
+
+    -- Safety check: validate deleted_index is reasonable
+    if not deleted_index or deleted_index < 1 then
+        logger.warn("Eraser: Invalid deleted_index:", deleted_index)
+        return
+    end
+
+    -- STEP 1: Remove ALL boxes that reference the deleted annotation
+    -- Multi-line highlights create multiple boxes with the same index
+    -- We must iterate backwards to safely remove items during iteration
+    local removed_count = 0
+    for i = #visible_boxes, 1, -1 do
+        local box = visible_boxes[i]
+        if box.index == deleted_index then
+            table.remove(visible_boxes, i)
+            removed_count = removed_count + 1
+        end
+    end
+
+    if removed_count == 0 then
+        logger.warn("Eraser: Could not find any boxes with index", deleted_index, "in visible_boxes")
+    end
+
+    -- STEP 2: Shift down indices for all boxes that point to annotations after the deleted one
+    -- After table.remove in annotations array, all indices > deleted_index shift down by 1
+    local shifted_count = 0
+    for _, box in ipairs(visible_boxes) do
+        if box.index and box.index > deleted_index then
+            box.index = box.index - 1
+            shifted_count = shifted_count + 1
+        end
+    end
+
+    logger.dbg("Eraser: Refreshed visible_boxes - removed:", removed_count, "boxes, shifted:", shifted_count, "boxes")
+end
+
 function Eraser:deleteHighlightsAtPosition(pos)
     -- Delete highlights at the given screen position
     -- Uses deleted_highlights tracking to prevent race conditions when multiple pan events
@@ -597,7 +651,7 @@ function Eraser:deleteHighlightsAtPosition(pos)
             local annotation = self.ui.annotation.annotations[box.index]
 
             if not annotation then
-                logger.dbg("Eraser: No annotation found for box index", box.index)
+                logger.warn("Eraser: No annotation found for box index", box.index)
                 goto continue
             end
 
@@ -619,23 +673,32 @@ function Eraser:deleteHighlightsAtPosition(pos)
                 -- Mark as deleted BEFORE attempting deletion to prevent race conditions
                 self.deleted_highlights[highlight_id] = true
 
+                -- CRITICAL: Store the index BEFORE deletion because it will be used
+                -- to update visible_boxes after the deletion shifts the annotations array
+                local deleted_index = box.index
+
                 -- Wrap deletion in pcall for safety - protects against index becoming invalid
                 -- between when we check inside_box and when we actually delete
                 local success, err = pcall(function()
-                    highlight_module:deleteHighlight(box.index)
+                    highlight_module:deleteHighlight(deleted_index)
                 end)
 
                 if success then
-                    logger.dbg("Eraser: Deleted highlight", highlight_id, "at index", box.index)
+                    logger.info("Eraser: Deleted highlight at index", deleted_index)
                     deleted_any = true
+
+                    -- CRITICAL: Remove ALL boxes for deleted annotation and update remaining indices
+                    -- Multi-line highlights create multiple boxes with same index
+                    -- After table.remove() in removeItemByIndex(), all annotations after
+                    -- deleted_index shift down by 1. We must update visible_boxes to match.
+                    self:refreshVisibleBoxIndices(deleted_index)
                 else
                     -- If deletion failed, remove from tracking so user can try again
                     self.deleted_highlights[highlight_id] = nil
-                    logger.warn("Eraser: Failed to delete highlight", highlight_id, "at index", box.index, ":",
-                        tostring(err))
+                    logger.warn("Eraser: Failed to delete highlight at index", deleted_index, ":", tostring(err))
                 end
             else
-                logger.dbg("Eraser: Skipping already-deleted highlight", highlight_id)
+                logger.dbg("Eraser: Skipping already-deleted highlight:", highlight_id)
             end
 
             ::continue::
